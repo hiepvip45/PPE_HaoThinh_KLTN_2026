@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+app_config.json
+captured_violations/
+exports/
+*.pt
+*.log
+.env

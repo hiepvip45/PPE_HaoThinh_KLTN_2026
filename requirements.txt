@@ -1,0 +1,24 @@
+# PPE Guardian - Requirements
+# Python 3.10+ required
+
+# GUI
+PyQt6>=6.5.0
+PyQt6-Qt6>=6.5.0
+
+# Computer Vision & AI
+ultralytics>=8.0.0      # YOLOv8
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# Database
+mysql-connector-python>=8.1.0
+
+# Telegram
+requests>=2.31.0
+
+# Charts
+matplotlib>=3.7.0
+
+# Utils
+python-dotenv>=1.0.0
