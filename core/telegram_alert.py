@@ -60,6 +60,7 @@ class TelegramAlerter:
             return
         if not self._can_send(violation_type):
             return
+        self._mark_sent(violation_type)
 
         threading.Thread(
             target=self._send_async,

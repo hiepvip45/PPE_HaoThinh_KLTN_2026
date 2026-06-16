@@ -56,6 +56,7 @@ class PPEDetector:
     def __init__(self, model_path: str = 'best.pt', confidence: float = 0.5):
         self.model_path = model_path
         self.confidence = confidence
+        self.inference_size = 416
         self.model: Optional[YOLO] = None
         self.class_names: List[str] = []
         self.loaded = False
@@ -83,7 +84,12 @@ class PPEDetector:
         vclasses = violation_classes if violation_classes else VIOLATION_CLASSES
 
         try:
-            results = self.model(frame, conf=self.confidence, verbose=False)
+            results = self.model(
+                frame,
+                conf=self.confidence,
+                imgsz=self.inference_size,
+                verbose=False
+            )
             annotated = frame.copy()
             confidences = []
 
