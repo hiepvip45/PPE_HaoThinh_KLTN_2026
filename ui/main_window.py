@@ -35,11 +35,7 @@ class PPEGuardianWindow(QMainWindow):
 
         self.config = ConfigManager()
         self.db = DatabaseManager(
-            host=self.config.get('db_host', 'localhost'),
-            port=int(self.config.get('db_port', 3306)),
-            database=self.config.get('db_name', 'ppe_guardian'),
-            user=self.config.get('db_user', 'root'),
-            password=self.config.get('db_password', ''),
+            db_path=self.config.get('db_path', 'ppe_guardian.db')
         )
         self.detector = PPEDetector(
             model_path=self.config.model_path,

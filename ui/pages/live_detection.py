@@ -6,6 +6,8 @@ import cv2
 import numpy as np
 import os
 import uuid
+import time
+import threading
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -17,7 +19,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from core import PPEDetector, CaptureManager, TelegramAlerter
-from core.detector import VIOLATION_LABELS_VI, VIOLATION_CLASSES
+from core.detector import VIOLATION_LABELS_VI, VIOLATION_CLASSES, CLASS_COLORS
 
 
 # ─── Camera IP Dialog ────────────────────────────────────────────────────────
@@ -247,24 +249,31 @@ def QApplication_processEvents():
 
 # ─── Video Worker ─────────────────────────────────────────────────────────────
 class VideoWorker(QThread):
+    display_ready = pyqtSignal(np.ndarray)
     frame_ready = pyqtSignal(np.ndarray, object)
     finished    = pyqtSignal()
     error       = pyqtSignal(str)
     status_msg  = pyqtSignal(str)
 
     def __init__(self, source, detector, violation_classes,
-                 reconnect=False):
+                 reconnect=False, detect_fps=5, display_fps=24):
         super().__init__()
         self.source           = source
         self.detector         = detector
         self.violation_classes = violation_classes
         self.reconnect        = reconnect   # tự kết nối lại nếu mất tín hiệu
+        self.detect_fps       = max(1, detect_fps)
+        self.display_fps      = max(self.detect_fps, display_fps)
         self._running         = False
+        self._detecting       = False
+        self._detect_lock     = threading.Lock()
 
     def run(self):
         self._running = True
         fail_count = 0
         max_fails  = 50   # ~5 giây liên tiếp không có frame
+        detect_interval = 1.0 / self.detect_fps
+        display_interval = 1.0 / self.display_fps
 
         while self._running:
             cap = cv2.VideoCapture(self.source)
@@ -272,13 +281,16 @@ class VideoWorker(QThread):
                 self.error.emit(f"Không thể mở nguồn:\n{self.source}")
                 return
 
-            # Tối ưu buffer cho RTSP
-            if isinstance(self.source, str) and self.source.startswith("rtsp"):
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            # Giữ buffer nhỏ để tránh xử lý dồn frame cũ và giảm tải webcam USB.
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            if isinstance(self.source, int):
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
             self.status_msg.emit(f"✅ Đã kết nối: {self.source}")
-            skip = 0
             fail_count = 0
+            next_detect_time = 0.0
+            next_display_time = 0.0
 
             while self._running:
                 ret, frame = cap.read()
@@ -298,12 +310,16 @@ class VideoWorker(QThread):
                     continue
 
                 fail_count = 0
-                skip += 1
-                if skip % 2 != 0:
-                    continue
+                now = time.monotonic()
 
-                result = self.detector.detect(frame, self.violation_classes)
-                self.frame_ready.emit(result.annotated_frame, result)
+                if now >= next_display_time:
+                    self.display_ready.emit(frame)
+                    next_display_time = now + display_interval
+
+                if now >= next_detect_time and self._try_start_detection(frame):
+                    next_detect_time = now + detect_interval
+
+                self.msleep(1)
 
             cap.release()
 
@@ -311,6 +327,31 @@ class VideoWorker(QThread):
                 break
 
         self.finished.emit()
+
+    def _try_start_detection(self, frame):
+        with self._detect_lock:
+            if self._detecting:
+                return False
+            self._detecting = True
+
+        detect_frame = frame.copy()
+        threading.Thread(
+            target=self._detect_async,
+            args=(detect_frame,),
+            daemon=True
+        ).start()
+        return True
+
+    def _detect_async(self, frame):
+        try:
+            if not self._running:
+                return
+            result = self.detector.detect(frame, self.violation_classes)
+            if self._running:
+                self.frame_ready.emit(result.annotated_frame, result)
+        finally:
+            with self._detect_lock:
+                self._detecting = False
 
     def stop(self):
         self._running = False
@@ -334,6 +375,11 @@ class LiveDetectionPage(QWidget):
         self.current_source_name = 'Webcam'
         self._frame_count = 0
         self._last_ip_url = ""
+        self._last_saved_violation = {}
+        self._violation_save_cooldown = 5.0
+        self._last_detection_objects = []
+        self._last_detection_at = 0.0
+        self._overlay_ttl = 1.0
         self._setup_ui()
         self._fps_timer = QTimer()
         self._fps_timer.timeout.connect(self._update_fps)
@@ -643,10 +689,14 @@ class LiveDetectionPage(QWidget):
 
         vclasses = {c for c, cb in self.vio_checks.items() if cb.isChecked()}
         self.session_id = str(uuid.uuid4())[:8]
+        self._last_detection_objects = []
+        self._last_detection_at = 0.0
         reconnect = self.cb_reconnect.isChecked()
 
         self.worker = VideoWorker(
-            self.current_source, self.detector, vclasses, reconnect)
+            self.current_source, self.detector, vclasses, reconnect,
+            detect_fps=8, display_fps=24)
+        self.worker.display_ready.connect(self._on_display_frame)
         self.worker.frame_ready.connect(self._on_frame)
         self.worker.error.connect(self._on_error)
         self.worker.finished.connect(self._on_finished)
@@ -658,6 +708,10 @@ class LiveDetectionPage(QWidget):
         self.lbl_src.setText(f"📡 Đang chạy: {self.current_source_name}")
         self.status_lbl.setText(f"⏳ Đang kết nối {self.current_source_name}...")
 
+    def _on_display_frame(self, frame):
+        self._show_frame(self._draw_cached_detections(frame))
+        self._frame_count += 1
+
     def _stop(self):
         if self.worker:
             self.worker.stop()
@@ -666,15 +720,55 @@ class LiveDetectionPage(QWidget):
         self.btn_stop.setEnabled(False)
         self.lbl_src.setText("⏹ Đã dừng")
         self.status_lbl.setText("Đã dừng")
+        self._last_detection_objects = []
+        self._last_detection_at = 0.0
 
     def _on_frame(self, frame, result):
-        self._show_frame(frame)
+        self._last_detection_objects = list(result.objects)
+        self._last_detection_at = time.monotonic()
         self._update_info(result)
-        self._frame_count += 1
         if result.has_violation:
-            self._save_and_alert(result, None,
-                                  self.current_source_type,
-                                  self.current_source_name)
+            selected = self._violations_due_for_save(result.violations)
+            if selected:
+                self._save_and_alert(result, None,
+                                     self.current_source_type,
+                                     self.current_source_name,
+                                     selected)
+
+    def _draw_cached_detections(self, frame):
+        if not self._last_detection_objects:
+            return frame
+        if time.monotonic() - self._last_detection_at > self._overlay_ttl:
+            return frame
+
+        annotated = frame.copy()
+        for obj in self._last_detection_objects:
+            class_name = obj.get('class_name', '')
+            conf = obj.get('confidence', 0.0)
+            x1 = int(obj.get('bbox_x1', 0))
+            y1 = int(obj.get('bbox_y1', 0))
+            x2 = int(obj.get('bbox_x2', 0))
+            y2 = int(obj.get('bbox_y2', 0))
+            is_vio = bool(obj.get('is_violation', False))
+
+            color = CLASS_COLORS.get(class_name, (128, 128, 128))
+            thickness = 3 if is_vio else 2
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thickness)
+
+            label_vi = VIOLATION_LABELS_VI.get(class_name, class_name)
+            label = f"{label_vi} {conf:.0%}"
+            font_scale = 0.55
+            font_thick = 1
+            (lw, lh), baseline = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+            ly = max(y1 - 5, lh + 5)
+            cv2.rectangle(annotated, (x1, ly - lh - baseline - 4),
+                          (x1 + lw + 4, ly + 2), color, -1)
+            text_color = (0, 0, 0) if is_vio else (255, 255, 255)
+            cv2.putText(annotated, label, (x1 + 2, ly - 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, font_thick)
+
+        return annotated
 
     def _show_frame(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -683,7 +777,7 @@ class LiveDetectionPage(QWidget):
         pix = QPixmap.fromImage(qimg).scaled(
             self.video_lbl.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
+            Qt.TransformationMode.FastTransformation)
         self.video_lbl.setPixmap(pix)
 
     def _update_info(self, result):
@@ -696,8 +790,23 @@ class LiveDetectionPage(QWidget):
         if result.confidence_avg > 0:
             self.lbl_conf_cur.setText(f"🎯 Độ tin cậy TB: {result.confidence_avg:.0%}")
 
-    def _save_and_alert(self, result, existing_img, src_type, src_name):
+    def _violations_due_for_save(self, violations):
+        now = time.monotonic()
+        selected = []
+        for vobj in violations:
+            vtype = vobj['class_name']
+            last = self._last_saved_violation.get(vtype, 0.0)
+            if now - last >= self._violation_save_cooldown:
+                self._last_saved_violation[vtype] = now
+                selected.append(vobj)
+        return selected
+
+    def _save_and_alert(self, result, existing_img, src_type, src_name,
+                        selected_violations=None):
         if not self.db:
+            return
+        violations = selected_violations if selected_violations is not None else result.violations
+        if not violations:
             return
         det_id = self.db.save_detection(
             self.session_id, src_type, src_name,
@@ -706,7 +815,7 @@ class LiveDetectionPage(QWidget):
         if det_id:
             self.db.save_detection_objects(det_id, result.objects)
 
-        for vobj in result.violations:
+        for vobj in violations:
             img_path = existing_img
             if self.cb_capture.isChecked() and result.annotated_frame is not None:
                 img_path = self.capture_mgr.save_violation_image(

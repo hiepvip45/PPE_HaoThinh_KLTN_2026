@@ -8,7 +8,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
-import mysql.connector
 
 
 class SettingsPage(QWidget):
@@ -39,42 +38,28 @@ class SettingsPage(QWidget):
         db_layout = QVBoxLayout(db_tab)
         db_layout.setSpacing(12)
 
-        db_group = self._make_group("KẾT NỐI MYSQL")
+        db_group = self._make_group("CẤU HÌNH DATABASE SQLITE")
         db_form = QFormLayout()
         db_form.setSpacing(10)
         db_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        self.inp_host = QLineEdit()
-        self.inp_host.setPlaceholderText("localhost")
-        self.inp_port = QLineEdit()
-        self.inp_port.setPlaceholderText("3306")
-        self.inp_port.setMaximumWidth(100)
-        self.inp_dbname = QLineEdit()
-        self.inp_dbname.setPlaceholderText("ppe_guardian")
-        self.inp_user = QLineEdit()
-        self.inp_user.setPlaceholderText("root")
-        self.inp_pass = QLineEdit()
-        self.inp_pass.setEchoMode(QLineEdit.EchoMode.Password)
-        self.inp_pass.setPlaceholderText("Mật khẩu MySQL")
+        self.inp_db_path = QLineEdit()
+        self.inp_db_path.setPlaceholderText("ppe_guardian.db")
 
-        db_form.addRow("Host:", self.inp_host)
-        db_form.addRow("Port:", self.inp_port)
-        db_form.addRow("Database:", self.inp_dbname)
-        db_form.addRow("Username:", self.inp_user)
-        db_form.addRow("Password:", self.inp_pass)
-
+        db_form.addRow("Đường dẫn DB:", self.inp_db_path)
+        
         db_btn_row = QHBoxLayout()
-        btn_test_db = QPushButton("🔌  Test kết nối")
-        btn_test_db.clicked.connect(self._test_db)
+        btn_browse_db = QPushButton("📂  Chọn file DB")
+        btn_browse_db.clicked.connect(self._browse_db_path)
         btn_save_db = QPushButton("💾  Lưu cấu hình DB")
         btn_save_db.setObjectName("btn_primary")
         btn_save_db.clicked.connect(self._save_db)
-        db_btn_row.addWidget(btn_test_db)
+        db_btn_row.addWidget(btn_browse_db)
         db_btn_row.addWidget(btn_save_db)
         db_btn_row.addStretch()
 
-        self.lbl_db_status = QLabel("")
-        self.lbl_db_status.setStyleSheet("font-size:12px;")
+        self.lbl_db_status = QLabel("ℹ️  Dữ liệu sẽ được lưu vào file SQLite")
+        self.lbl_db_status.setStyleSheet("font-size:12px; color:#64748b;")
 
         db_inner = QVBoxLayout()
         db_inner.addLayout(db_form)
@@ -214,11 +199,7 @@ class SettingsPage(QWidget):
 
     def _load_values(self):
         c = self.config.get_all()
-        self.inp_host.setText(c.get('db_host', 'localhost'))
-        self.inp_port.setText(c.get('db_port', '3306'))
-        self.inp_dbname.setText(c.get('db_name', 'ppe_guardian'))
-        self.inp_user.setText(c.get('db_user', 'root'))
-        self.inp_pass.setText(c.get('db_password', ''))
+        self.inp_db_path.setText(c.get('db_path', 'ppe_guardian.db'))
         self.inp_token.setText(c.get('telegram_bot_token', ''))
         self.inp_chatid.setText(c.get('telegram_chat_id', ''))
         self.inp_cooldown.setValue(int(c.get('alert_cooldown_seconds', 30)))
@@ -226,30 +207,18 @@ class SettingsPage(QWidget):
         self.inp_conf.setValue(float(c.get('confidence_threshold', 0.5)))
         self.inp_capture_dir.setText(c.get('capture_dir', 'captured_violations'))
 
-    def _test_db(self):
-        try:
-            conn = mysql.connector.connect(
-                host=self.inp_host.text(),
-                port=int(self.inp_port.text() or 3306),
-                database=self.inp_dbname.text(),
-                user=self.inp_user.text(),
-                password=self.inp_pass.text(),
-                connection_timeout=5
-            )
-            conn.close()
-            self.lbl_db_status.setText("✅ Kết nối thành công!")
-            self.lbl_db_status.setStyleSheet("color:#16a34a; font-size:12px;")
-        except Exception as e:
-            self.lbl_db_status.setText(f"❌ {str(e)[:80]}")
-            self.lbl_db_status.setStyleSheet("color:#dc2626; font-size:12px;")
+    def _browse_db_path(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Chọn hoặc tạo file database", "", "SQLite DB (*.db)")
+        if path:
+            self.inp_db_path.setText(path)
 
     def _save_db(self):
+        db_path = self.inp_db_path.text().strip()
+        if not db_path:
+            db_path = 'ppe_guardian.db'
         self.config.update({
-            'db_host': self.inp_host.text(),
-            'db_port': self.inp_port.text(),
-            'db_name': self.inp_dbname.text(),
-            'db_user': self.inp_user.text(),
-            'db_password': self.inp_pass.text(),
+            'db_path': db_path,
         })
         QMessageBox.information(self, "Đã lưu",
                                  "Cấu hình database đã được lưu!\n"

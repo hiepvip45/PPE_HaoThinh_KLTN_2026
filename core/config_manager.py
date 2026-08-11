@@ -7,11 +7,7 @@ from typing import Dict, Any
 
 
 DEFAULT_CONFIG = {
-    "db_host": "localhost",
-    "db_port": "3306",
-    "db_name": "ppe_guardian",
-    "db_user": "root",
-    "db_password": "",
+    "db_path": "ppe_guardian.db",
     "telegram_bot_token": "8970431050:AAEZCOOT5fxv1APDesuv5JWZqBlS62yOoZ8",
     "telegram_chat_id": "6101947078",
     "alert_cooldown_seconds": "30",
